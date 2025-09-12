@@ -347,6 +347,13 @@ module move_stl::skip_list {
     #[test_only]
     use std::debug;
 
+    #[allow(unused)]
+    public struct Item has drop, store {
+        n: u64,
+        score: u64,
+        finded: OptionU64,
+    }
+
     #[test_only]
     public fun find_nearest<V: store>(list: &SkipList<V>, score: u64): OptionU64 {
         list.find(score)
