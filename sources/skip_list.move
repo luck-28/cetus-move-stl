@@ -1,22 +1,25 @@
-module move_stl::skip_list_u128 {
+module move_stl::skip_list {
     use std::vector::push_back;
-    use sui::table;
-    use move_stl::option_u128::{Self, OptionU128, none, some, is_none, is_some, swap_or_fill, is_some_and_lte};
+    use move_stl::option_u64::{Self, OptionU64, none, some, is_none, is_some, swap_or_fill, is_some_and_lte};
     use move_stl::random::{Self, Random};
+    use sui::dynamic_field as field;
 
     const ENodeAlreadyExist: u64 = 0;
     const ENodeDoesNotExist: u64 = 1;
     const ESkipListNotEmpty: u64 = 3;
-    const EInvalidListP: u64 = 4;
+
+    #[allow(unused_const)]
+    const ESkipListIsEmpty: u64 = 4;
+    const EInvalidListP: u64 = 5;
 
     /// The skip list.
-    public struct SkipList<V: store> has key, store{
+    public struct SkipList<phantom V: store> has key, store {
         /// The id of this skip list.
         id: UID,
         /// The skip list header of each level. i.e. the score of node.
-        head: vector<OptionU128>,
+        head: vector<OptionU64>,
         /// The level0's tail of skip list. i.e. the score of node.
-        tail: OptionU128,
+        tail: OptionU64,
         /// The current level of this skip list.
         level: u64,
         /// The max level of this skip list.
@@ -24,21 +27,21 @@ module move_stl::skip_list_u128 {
         /// Basic probability of random of node indexer's level i.e. (list_p = 2, level2 = 1/2, level3 = 1/4).
         list_p: u64,
 
+        /// The size of skip list
+        size: u64,
+
         /// The random for generate ndoe's level
         random: Random,
-
-        /// The table for store node.
-        inner: table::Table<u128, SkipListNode<V>>
     }
 
     /// The node of skip list.
-    public struct SkipListNode<V: store> has store {
+    public struct Node<V: store> has store {
         /// The score of node.
-        score: u128,
+        score: u64,
         /// The next node score of node's each level.
-        nexts: vector<OptionU128>,
+        nexts: vector<OptionU64>,
         /// The prev node score of node.
-        prev: OptionU128,
+        prev: OptionU64,
         /// The data being stored
         value: V,
     }
@@ -54,23 +57,23 @@ module move_stl::skip_list_u128 {
             max_level,
             list_p,
             random: random::new(seed),
-            inner: table::new(ctx)
+            size: 0
         };
         list
     }
 
     /// Return the length of the skip list.
     public fun length<V: store>(list: &SkipList<V>): u64 {
-        table::length(&list.inner)
+        list.size
     }
 
     /// Returns true if the skip list is empty (if `length` returns `0`)
     public fun is_empty<V: store>(list: &SkipList<V>): bool {
-        table::length(&list.inner) == 0
+        list.size == 0
     }
 
     /// Return the head of the skip list.
-    public fun head<V: store>(list: &SkipList<V>): OptionU128 {
+    public fun head<V: store>(list: &SkipList<V>): OptionU64 {
         if (is_empty(list)) {
             return none()
         };
@@ -78,7 +81,7 @@ module move_stl::skip_list_u128 {
     }
 
     /// Return the tail of the skip list.
-    public fun tail<V: store>(list: &SkipList<V>): OptionU128 {
+    public fun tail<V: store>(list: &SkipList<V>): OptionU64 {
         list.tail
     }
 
@@ -93,86 +96,84 @@ module move_stl::skip_list_u128 {
             max_level: _,
             list_p: _,
             random: _,
-            inner
+            size,
         } = list;
-        assert!(table::length(&inner) == 0, ESkipListNotEmpty);
-        table::destroy_empty(inner);
+        assert!(size == 0, ESkipListNotEmpty);
         object::delete(id);
     }
 
-    /// Returns true if there is a value associated with the score `score` in skip list `table: &SkipList<V>`
-    public fun contains<V: store>(list: &SkipList<V>, score: u128): bool {
-        table::contains(&list.inner, score)
+    /// Returns true if there is a value associated with the score `score` in skip list
+    public fun contains<V: store>(list: &SkipList<V>, score: u64): bool {
+        field::exists_with_type<u64, Node<V>>(&list.id, score)
     }
 
     /// Acquire an immutable reference to the `score` element of the skip list `list`.
     /// Aborts if element not exist.
-    public fun borrow<V: store>(list: &SkipList<V>, score: u128): &V {
-        let node = table::borrow(&list.inner, score);
-        &node.value
+    public fun borrow<V: store>(list: &SkipList<V>, score: u64): &V {
+        &field::borrow<u64, Node<V>>(&list.id, score).value
     }
 
     /// Return a mutable reference to the `score` element in the skip list `list`.
     /// Aborts if element is not exist.
-    public fun borrow_mut<V: store>(list: &mut SkipList<V>, score: u128): &mut V {
-        let node = table::borrow_mut(&mut list.inner, score);
-        &mut node.value
+    public fun borrow_mut<V: store>(list: &mut SkipList<V>, score: u64): &mut V {
+        &mut field::borrow_mut<u64, Node<V>>(&mut list.id, score).value
     }
 
     /// Acquire an immutable reference to the `score` node of the skip list `list`.
     /// Aborts if node not exist.
-    public fun borrow_node<V: store>(list: &SkipList<V>, score: u128): &SkipListNode<V> {
-        table::borrow(&list.inner, score)
+    public fun borrow_node<V: store>(list: &SkipList<V>, score: u64): &Node<V> {
+        field::borrow<u64, Node<V>>(&list.id, score)
     }
 
     /// Return a mutable reference to the `score` node in the skip list `list`.
     /// Aborts if node is not exist.
-    public fun borrow_mut_node<V: store>(list: &mut SkipList<V>, score: u128): &mut SkipListNode<V> {
-        table::borrow_mut(&mut list.inner, score)
+    public fun borrow_mut_node<V: store>(list: &mut SkipList<V>, score: u64): &mut Node<V> {
+        field::borrow_mut<u64, Node<V>>(&mut list.id, score)
     }
 
     /// Return the metadata info of skip list.
-    public fun metadata<V: store>(list: &SkipList<V>): (vector<OptionU128>, OptionU128, u64, u64, u64, u64) {
+    public fun metadata<V: store>(list: &SkipList<V>): (vector<OptionU64>, OptionU64, u64, u64, u64, u64) {
         (
             list.head,
             list.tail,
             list.level,
             list.max_level,
             list.list_p,
-            table::length(&list.inner)
+            list.size
         )
     }
 
     /// Return the next score of the node.
-    public fun next_score<V: store>(node: &SkipListNode<V>): OptionU128 {
+    public fun next_score<V: store>(node: &Node<V>): OptionU64 {
         *vector::borrow(&node.nexts, 0)
     }
 
     /// Return the prev score of the node.
-    public fun prev_score<V: store>(node: &SkipListNode<V>): OptionU128 {
+    public fun prev_score<V: store>(node: &Node<V>): OptionU64 {
         node.prev
     }
 
     /// Return the immutable reference to the ndoe's value.
-    public fun borrow_value<V: store>(node: &SkipListNode<V>): &V {
+    public fun borrow_value<V: store>(node: &Node<V>): &V {
         &node.value
     }
 
     /// Return the mutable reference to the ndoe's value.
-    public fun borrow_mut_value<V: store>(node: &mut SkipListNode<V>): &mut V {
+    public fun borrow_mut_value<V: store>(node: &mut Node<V>): &mut V {
         &mut node.value
     }
 
     /// Insert a score-value into skip list, abort if the score alread exist.
-    public fun insert<V: store>(list: &mut SkipList<V>, score: u128, v: V) {
-        assert!(!table::contains(&list.inner, score), ENodeAlreadyExist);
+    public fun insert<V: store>(list: &mut SkipList<V>, score: u64, v: V) {
+        assert!(!contains(list, score), ENodeAlreadyExist);
         let (level, mut new_node) = create_node(list, score, v);
         let (mut l, mut nexts, mut prev) = (list.level, &mut list.head, none());
         let mut opt_l0_next_score = none();
         while(l > 0) {
             let mut opt_next_score = vector::borrow_mut(nexts, l - 1);
             while (is_some_and_lte(opt_next_score, score)) {
-                let node = table::borrow_mut(&mut list.inner, option_u128::borrow(opt_next_score));
+                let node =
+                    field::borrow_mut<u64, Node<V>>(&mut list.id, option_u64::borrow(opt_next_score));
                 prev = some(node.score);
                 nexts = &mut node.nexts;
                 opt_next_score = vector::borrow_mut(nexts, l - 1);
@@ -191,27 +192,29 @@ module move_stl::skip_list_u128 {
             };
             l = l - 1;
         };
-        vector::reverse(&mut new_node.nexts);
-        table::add(&mut list.inner, score, new_node);
         if (is_some(&opt_l0_next_score)) {
-            let next_node = table::borrow_mut(&mut list.inner, option_u128::borrow(&opt_l0_next_score));
+            let next_node = borrow_mut_node(list, option_u64::borrow(&opt_l0_next_score));
             next_node.prev = some(score);
         };
+
+        vector::reverse(&mut new_node.nexts);
+        field::add(&mut list.id, score, new_node);
+        list.size = list.size + 1;
     }
 
     /// Remove the score-value from skip list, abort if the score not exist in list.
-    public fun remove<V: store>(list: &mut SkipList<V>, score: u128): V {
-        assert!(table::contains(&list.inner, score), ENodeDoesNotExist);
+    public fun remove<V: store>(list: &mut SkipList<V>, score: u64): V {
+        assert!(contains(list, score), ENodeDoesNotExist);
         let (mut l, mut nexts) = (list.level, &mut list.head);
-        let node = table::remove(&mut list.inner, score);
+        let node: Node<V> = field::remove(&mut list.id, score);
         while (l > 0) {
             let mut opt_next_score = vector::borrow_mut(nexts, l - 1);
             while (is_some_and_lte(opt_next_score, score)) {
-                let next_score = option_u128::borrow(opt_next_score);
+                let next_score = option_u64::borrow(opt_next_score);
                 if (next_score == score) {
                     *opt_next_score = *vector::borrow(&node.nexts, l - 1);
                 } else {
-                    let node = table::borrow_mut(&mut list.inner, next_score);
+                    let node = borrow_mut_node(list, next_score);
                     nexts = &mut node.nexts;
                     opt_next_score = vector::borrow_mut(nexts, l - 1);
                 }
@@ -219,26 +222,27 @@ module move_stl::skip_list_u128 {
             l = l - 1;
         };
 
-        if (option_u128::borrow(&list.tail) == score) {
+        if (option_u64::borrow(&list.tail) == score) {
             list.tail = node.prev;
         };
 
         let opt_l0_next_score = vector::borrow(&node.nexts, 0);
         if (is_some(opt_l0_next_score)) {
-            let next_node = table::borrow_mut(&mut list.inner, option_u128::borrow(opt_l0_next_score));
+            let next_node = borrow_mut_node(list, option_u64::borrow(opt_l0_next_score));
             next_node.prev = node.prev;
         };
+        list.size = list.size - 1;
 
         drop_node(node)
     }
 
     /// Return the next score.
-    public fun find_next<V: store>(list: &SkipList<V>, score: u128, include: bool): OptionU128 {
+    public fun find_next<V: store>(list: &SkipList<V>, score: u64, include: bool): OptionU64 {
         let opt_finded_score = find(list, score);
         if (is_none(&opt_finded_score)) {
             return opt_finded_score
         };
-        let finded_score = option_u128::borrow(&opt_finded_score);
+        let finded_score = option_u64::borrow(&opt_finded_score);
         if ((include && finded_score == score) || (finded_score > score)) {
             return opt_finded_score
         };
@@ -247,12 +251,12 @@ module move_stl::skip_list_u128 {
     }
 
     /// Return the prev socre.
-    public fun find_prev<V: store>(list: &SkipList<V>, score: u128, include: bool): OptionU128 {
+    public fun find_prev<V: store>(list: &SkipList<V>, score: u64, include: bool): OptionU64 {
         let opt_finded_score = find(list, score);
         if (is_none(&opt_finded_score)) {
             return opt_finded_score
         };
-        let finded_score = option_u128::borrow(&opt_finded_score);
+        let finded_score = option_u64::borrow(&opt_finded_score);
         if ((include && finded_score == score) || (finded_score < score)) {
             return opt_finded_score
         };
@@ -261,19 +265,19 @@ module move_stl::skip_list_u128 {
     }
 
     /// Find the nearest score. 1. score, 2. prev, 3. next
-    fun find<V: store>(list: &SkipList<V>, score: u128): OptionU128 {
-        if (list.level == 0) {
+    fun find<V: store>(list: &SkipList<V>, score: u64): OptionU64 {
+        if (list.size == 0) {
             return none()
         };
-        let (mut l, mut nexts, mut current_score) = (list.level, &list.head, none());
+        let (mut l, mut nexts,mut current_score) = (list.level, &list.head, none());
         while (l > 0) {
             let mut opt_next_score = *vector::borrow(nexts, l - 1);
             while(is_some_and_lte(&opt_next_score, score)) {
-                let next_score = option_u128::borrow(&opt_next_score);
+                let next_score = option_u64::borrow(&opt_next_score);
                 if (next_score == score) {
                     return some(next_score)
                 } else {
-                    let node = table::borrow(&list.inner, next_score);
+                    let node = borrow_node(list, next_score);
                     current_score = opt_next_score;
                     nexts = &node.nexts;
                     opt_next_score = *vector::borrow(nexts, l - 1);
@@ -307,7 +311,7 @@ module move_stl::skip_list_u128 {
     }
 
     /// Create a new skip list node
-    fun create_node<V: store>(list: &mut SkipList<V>, score: u128, value: V): (u64, SkipListNode<V>) {
+    fun create_node<V: store>(list: &mut SkipList<V>, score: u64, value: V): (u64, Node<V>) {
         let rand = random::rand(&mut list.random);
         let level = rand_level(rand, list);
 
@@ -319,7 +323,7 @@ module move_stl::skip_list_u128 {
 
         (
             level,
-            SkipListNode<V> {
+            Node<V> {
                 score,
                 nexts: vector::empty(),
                 prev: none(),
@@ -328,8 +332,8 @@ module move_stl::skip_list_u128 {
         )
     }
 
-    fun drop_node<V: store>(node: SkipListNode<V>): V {
-        let SkipListNode {
+    fun drop_node<V: store>(node: Node<V>): V {
+        let Node {
             score: _,
             nexts: _,
             prev: _,
@@ -338,13 +342,20 @@ module move_stl::skip_list_u128 {
         value
     }
 
-    // for tests
+    // tests
     // ============================================================================================
     #[test_only]
     use std::debug;
 
+    #[allow(unused)]
+    public struct Item has drop, store {
+        n: u64,
+        score: u64,
+        finded: OptionU64,
+    }
+
     #[test_only]
-    public fun find_nearest<V: store>(list: &SkipList<V>, score: u128): OptionU128 {
+    public fun find_nearest<V: store>(list: &SkipList<V>, score: u64): OptionU64 {
         list.find(score)
     }
 
@@ -430,8 +441,8 @@ module move_stl::skip_list_u128 {
     }
 
     #[test_only]
-    public fun get_all_socres<V: store>(list: &SkipList<V>): vector<u128> {
-        let (mut opt_next_score, mut scores ) = (list.head(), vector::empty<u128>());
+    public fun get_all_socres<V: store>(list: &SkipList<V>): vector<u64> {
+        let (mut opt_next_score,mut scores ) = (list.head(), vector::empty<u64>());
         while (opt_next_score.is_some()) {
             let next_score = opt_next_score.borrow();
             let next_node = list.borrow_node(next_score);
